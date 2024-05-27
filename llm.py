@@ -11,6 +11,7 @@ from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 import tqdm
 from llama_index.core.vector_stores import ExactMatchFilter, MetadataFilters
+from tqdm import tqdm
 from llama_index.core.vector_stores import (
     MetadataFilter,
     MetadataFilters,
@@ -21,46 +22,49 @@ load_dotenv()
 
 # ----- DATA CLEANING ----- #
 
-# Download giftcards products and reviews
-giftcards_reviews_dataset = load_dataset("McAuley-Lab/Amazon-Reviews-2023", "raw_review_Amazon_Fashion", trust_remote_code=True)
-giftcards_meta_dataset = load_dataset("McAuley-Lab/Amazon-Reviews-2023", "raw_meta_Amazon_Fashion", trust_remote_code=True)
+# Download product products and reviews
+product_reviews_dataset = load_dataset("McAuley-Lab/Amazon-Reviews-2023", "raw_review_All_Beauty", trust_remote_code=True)
+product_meta_dataset = load_dataset("McAuley-Lab/Amazon-Reviews-2023", "raw_meta_All_Beauty", trust_remote_code=True)
 embed_model = OpenAIEmbedding(model="text-embedding-3-small")
 
 # Convert to pandas df
-giftcards_reviews_df = pd.DataFrame(giftcards_reviews_dataset['full'])
-giftcards_meta_df = pd.DataFrame(giftcards_meta_dataset['full'])
+product_reviews_df = pd.DataFrame(product_reviews_dataset['full'])
+product_meta_df = pd.DataFrame(product_meta_dataset['full'])
 
 # For each product, add all relevant reviews.
 # Combine all reviews for a given parent ASIN, truncating text to fit chunk size.
-giftcards_reviews_df = giftcards_reviews_df.groupby('parent_asin').agg({'text': '\n'.join}).reset_index()
-giftcards_reviews_df.loc[:, 'text'] = giftcards_reviews_df['text'].apply(lambda x: x[:9000])
-giftcards_reviews_df = giftcards_reviews_df.merge(giftcards_meta_df, on='parent_asin')
+product_reviews_df = product_reviews_df.groupby('parent_asin').agg({'text': '\n'.join}).reset_index()
+product_reviews_df.loc[:, 'text'] = product_reviews_df['text'].apply(lambda x: x[:7500])
+product_reviews_df = product_reviews_df.merge(product_meta_df, on='parent_asin')
 
 # Create a new df with only the relevant columns
-giftcards_df = giftcards_reviews_df[['parent_asin', 'text', 'title', 'average_rating', 'rating_number', 'features', 'description', 'price', 'images', 'details', 'subtitle']]
+product_df = product_reviews_df[['parent_asin', 'text', 'title', 'average_rating', 'rating_number', 'features', 'description', 'price', 'images', 'details', 'subtitle']]
 
 # Remove rows with no price data and convert to float
-giftcards_df = giftcards_df.dropna(subset=["price", "images"])
-giftcards_df["price"] = giftcards_df["price"].apply(lambda x: x.replace("None", "0"))
-giftcards_df["price"] = pd.to_numeric(giftcards_df["price"])
+product_df.loc[:, "price"] = product_df["price"].apply(lambda x: x.replace("None", "0"))
+product_df.loc[:, "price"] = product_df["price"].apply(lambda x: x.replace("from ", ""))
+product_df.loc[:, "price"] = product_df["price"].apply(lambda x: x.replace("-", ""))
+product_df.loc[:, "price"] = pd.to_numeric(product_df["price"], errors='coerce')
+product_df = product_df[product_df["price"] != 0]
+product_df = product_df.dropna(subset=["price", "images"])
 
 # Convert columns to types that the LLM can handle
-giftcards_df.loc[:, "images"] = giftcards_df["images"].apply(lambda x: x.get("hi_res", None) if isinstance(x, dict) else None)
-giftcards_df.loc[:, "images"] = giftcards_df["images"].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
-giftcards_df.loc[:, "features"] = giftcards_df["features"].apply(lambda x: '\n'.join(x) if isinstance(x, list) else x)
+product_df.loc[:, "images"] = product_df["images"].apply(lambda x: x.get("hi_res", None) if isinstance(x, dict) else None)
+product_df.loc[:, "images"] = product_df["images"].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else None)
+product_df.loc[:, "features"] = product_df["features"].apply(lambda x: '\n'.join(x) if isinstance(x, list) else x)
 
 # ----- LLM PREP ----- #
 
 # Convert df to list of dicts
-giftcards_data = giftcards_df.to_dict(orient='records')
+product_data = product_df.to_dict(orient='records')
 
 # Pop unsupported columns from the dict.
-for product in giftcards_data:
+for product in product_data:
     product.pop("description")
 
 # Create LlamaIndex documents for each review
 documents = []
-for review in giftcards_data:
+for review in product_data:
     documents.append(
         Document(
             text=review["title"],
@@ -72,22 +76,27 @@ for review in giftcards_data:
 
 # Initialize Chroma DB and create/fetch collection
 db = chromadb.PersistentClient(path="./chroma_db")
-giftcards_collection = db.get_or_create_collection("giftcards")
-vector_store = ChromaVectorStore(chroma_collection=giftcards_collection)
+product_collection = db.get_or_create_collection("product")
+vector_store = ChromaVectorStore(chroma_collection=product_collection)
 
 # ----- ADD RECORDS ----- #
 
-# UNCOMMENT TO BUILD VECTOR STORE
-parser = SentenceSplitter(chunk_size=10000)
-nodes = parser.get_nodes_from_documents(documents, show_progress=True)
+# # UNCOMMENT TO BUILD VECTOR STORE
+# parser = SentenceSplitter(chunk_size=10000)
+# nodes = parser.get_nodes_from_documents(documents, show_progress=True)
 
-for node in tqdm.tqdm(nodes):
-    node_embedding = embed_model.get_text_embedding(
-        node.get_content(metadata_mode=MetadataMode.EMBED)
-    )
-    node.embedding = node_embedding
+# import concurrent.futures
 
-vector_store.add(nodes)
+# def process_node(node):
+#     node_embedding = embed_model.get_text_embedding(
+#         node.get_content(metadata_mode=MetadataMode.EMBED)
+#     )
+#     node.embedding = node_embedding
+
+# with concurrent.futures.ThreadPoolExecutor() as executor:
+#     list(tqdm(executor.map(process_node, nodes), total=len(nodes)))
+
+# vector_store.add(nodes)
 
 # ----- QUERY DB ----- #
 
@@ -99,8 +108,8 @@ def instantiate_db():
 def recommend_products(query: str, db = None, min_rating: float = 0, min_reviews: int = 100, max_price: float = 10):
     if db is None:
         db = instantiate_db()
-    giftcards_collection = db.get_or_create_collection("giftcards")
-    vector_store = ChromaVectorStore(chroma_collection=giftcards_collection)
+    product_collection = db.get_or_create_collection("product")
+    vector_store = ChromaVectorStore(chroma_collection=product_collection)
 
     # Build hardcoded filters
     filters = MetadataFilters(
@@ -123,8 +132,8 @@ def get_product_details(asin: str, db = None):
     # Get product metadata from product ASIN
     if db is None:
         db = instantiate_db()
-    giftcards_collection = db.get_or_create_collection("giftcards")
-    product = giftcards_collection.get(where={"parent_asin": asin}, limit=1)
+    product_collection = db.get_or_create_collection("product")
+    product = product_collection.get(where={"parent_asin": asin}, limit=1)
     return product["metadatas"]
 
 def justify_recommendation(query: str, product: dict):
@@ -143,7 +152,7 @@ def justify_recommendation(query: str, product: dict):
     return summary_response, positive_response, negative_response, neutral_response
 
 if __name__ == "__main__":
-    query = "a sick pair of trousers for my emo friend"
+    query = "anything!"
     response = recommend_products(query).split(",")
     print(response)
     details = get_product_details(response[0])

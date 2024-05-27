@@ -21,7 +21,7 @@ def main():
     # This page sets up the search bar. 
     # User adds query and 'hardcoded' settings, then clicks search and is redirected to the results page
     with ui.button_group().classes("mt-64 mx-auto items-center justify-center"):
-        query = ui.input(placeholder="What do you want from a giftcard?").classes("w-96 px-2")
+        query = ui.input(placeholder="Describe your dream...").classes("w-96 px-2")
         ui.button(icon="search", on_click=lambda: ui.navigate.to(f"/results?q={query.value}&min_rating={min_rating.value}&min_reviews={min_reviews.value}&max_price={max_price.value}") )
 
     ui.separator().classes("w-1/2 items-center justify-center mx-auto")
